@@ -76,7 +76,7 @@ class BrightnessIndicator:
     STARTUP_LABEL_RETRY_SECONDS = (1, 3)
     STARTUP_RETRY_INTERVAL_SECONDS = 1.0
     STARTUP_WARN_EVERY_ATTEMPTS = 5
-    LABEL_RESYNC_INTERVAL_SECONDS = 2
+    LABEL_RESYNC_INTERVAL_SECONDS = 5
     STARTUP_FORCE_REFRESH_MS = (0, 800, 2000)
     STARTUP_FORCE_SPLIT_DELAY_MS = 120
 
@@ -109,6 +109,7 @@ class BrightnessIndicator:
         self.last_set_value = None
         self.has_real_reading = False
         self.startup_force_refresh_scheduled = False
+        self.label_signal_toggle = False
 
         self.shutdown_started = False
 
@@ -364,13 +365,16 @@ class BrightnessIndicator:
         self.log.debug("brightness read [%s]: no readable display", context)
         return None
 
-    def update_indicator_label(self, value, guide="100%"):
+    def update_indicator_label(self, value, guide="100%", force_emit=False):
         if threading.get_ident() != self.main_thread_id:
-            GLib.idle_add(self.update_indicator_label, value, guide)
+            GLib.idle_add(self.update_indicator_label, value, guide, force_emit)
             return False
 
         try:
             base_label = f"{value}%"
+            if force_emit:
+                guide = "100% " if self.label_signal_toggle else "100%"
+                self.label_signal_toggle = not self.label_signal_toggle
             self.indicator.set_label(base_label, guide)
             self.indicator.set_title(base_label)
             if self.current_item is not None:
@@ -411,7 +415,7 @@ class BrightnessIndicator:
         if self.shutdown_started:
             return False
         if self.last_set_value is not None:
-            self.update_indicator_label(self.last_set_value)
+            self.update_indicator_label(self.last_set_value, force_emit=True)
         return True
 
     def handle_detected_brightness(self, current):
