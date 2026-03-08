@@ -22,13 +22,6 @@ from gi.repository import AyatanaAppIndicator3 as AppIndicator
 from gi.repository import GLib, Gtk
 
 try:
-    from PIL import Image, ImageDraw, ImageFont
-except Exception:
-    Image = None
-    ImageDraw = None
-    ImageFont = None
-
-try:
     from evdev import InputDevice, ecodes, list_devices
 except Exception:
     InputDevice = None
@@ -116,17 +109,12 @@ class BrightnessIndicator:
 
         self.state_path = state_dir / "state.json"
         self.legacy_state_path = Path(f"/run/user/{os.getuid()}/brightness-indicator-state.json")
-        self.icon_dir = state_dir / "icons"
-        self.icon_dir.mkdir(parents=True, exist_ok=True)
-        self.dynamic_icon_enabled = Image is not None and ImageDraw is not None and ImageFont is not None
 
         self.indicator = AppIndicator.Indicator.new(
             "brightness-control",
             "display-brightness-symbolic",
             AppIndicator.IndicatorCategory.HARDWARE,
         )
-        if self.dynamic_icon_enabled:
-            self.indicator.set_icon_theme_path(str(self.icon_dir))
         self.indicator.set_status(AppIndicator.IndicatorStatus.ACTIVE)
         self.indicator.set_label("--%", "100%")
 
@@ -135,8 +123,6 @@ class BrightnessIndicator:
         self.indicator.set_menu(self.menu)
 
         self.log.info("app started")
-        if not self.dynamic_icon_enabled:
-            self.log.warning("Pillow not available; numeric icon fallback disabled")
 
         self.load_state_cache()
         if self.last_set_value is not None:
@@ -371,51 +357,10 @@ class BrightnessIndicator:
             return False
 
         try:
-            label = f"{value}%"
-            self.indicator.set_label(label, "100%")
-            icon_name = self.ensure_numeric_icon_name(value)
-            if icon_name is not None:
-                self.indicator.set_icon_full(icon_name, label)
-                self.indicator.set_attention_icon_full(icon_name, label)
-                self.indicator.set_title(label)
+            self.indicator.set_label(f"{value}%", "100%")
         except Exception:
             self.log.exception("failed to update indicator label")
         return False
-
-    def ensure_numeric_icon_name(self, value):
-        if not self.dynamic_icon_enabled:
-            return None
-
-        value = max(0, min(100, int(value)))
-        icon_name = f"brightness-{value}"
-        icon_path = self.icon_dir / f"{icon_name}.png"
-        if icon_path.exists():
-            return icon_name
-
-        img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
-        draw = ImageDraw.Draw(img)
-
-        draw.rounded_rectangle((2, 2, 62, 62), radius=10, fill=(28, 28, 30, 236))
-
-        text = str(value)
-        try:
-            font = ImageFont.truetype("DejaVuSans-Bold.ttf", 28)
-        except Exception:
-            font = ImageFont.load_default()
-
-        bbox = draw.textbbox((0, 0), text, font=font)
-        tw = bbox[2] - bbox[0]
-        th = bbox[3] - bbox[1]
-        x = (64 - tw) // 2
-        y = (64 - th) // 2 - 2
-        draw.text((x, y), text, font=font, fill=(255, 255, 255, 255))
-
-        try:
-            img.save(icon_path)
-            return icon_name
-        except Exception:
-            self.log.exception("failed to save numeric icon")
-            return None
 
     def handle_detected_brightness(self, current):
         first_real_read = False
