@@ -21,13 +21,13 @@ Ubuntu/Debian example:
 
 ```bash
 sudo apt update
-sudo apt install -y ddcutil python3-gi gir1.2-ayatanaappindicator3-0.1 python3-evdev
+sudo apt install -y ddcutil python3-gi gir1.2-ayatanaappindicator3-0.1 python3-evdev python3-pillow
 ```
 
 Fedora example:
 
 ```bash
-sudo dnf install -y ddcutil python3-gobject libappindicator-gtk3 python3-evdev
+sudo dnf install -y ddcutil python3-gobject libappindicator-gtk3 python3-evdev python3-pillow
 ```
 
 ## Install
