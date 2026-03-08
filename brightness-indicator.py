@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import atexit
+from collections import deque
 import fcntl
 import faulthandler
 import json
@@ -72,6 +73,7 @@ class BrightnessIndicator:
     BRIGHTNESS_MATCH_TOLERANCE = 2
     CONTROL_QUIET_WINDOW_SECONDS = 6.0
     MEASURED_LABEL_MIN_DELTA = 2
+    STARTUP_PROBE_MAX_ATTEMPTS = 6
 
     def __init__(self, lock_fd, state_dir: Path):
         self.log = logging.getLogger(APP_NAME)
@@ -89,7 +91,7 @@ class BrightnessIndicator:
         self.supported_displays = []
         self.last_display_refresh = 0.0
 
-        self.pending_brightness = None
+        self.brightness_queue = deque()
         self.apply_cond = threading.Condition()
         self.apply_worker_stop = threading.Event()
 
@@ -103,6 +105,7 @@ class BrightnessIndicator:
         self.shutdown_started = False
 
         self.state_path = state_dir / "state.json"
+        self.legacy_state_path = Path(f"/run/user/{os.getuid()}/brightness-indicator-state.json")
 
         self.indicator = AppIndicator.Indicator.new(
             "brightness-control",
@@ -211,23 +214,26 @@ class BrightnessIndicator:
             return result
 
     def load_state_cache(self):
-        try:
-            with self.state_path.open("r", encoding="utf-8") as f:
-                data = json.load(f)
-            brightness = data.get("brightness")
-            displays = data.get("displays", [])
-            if isinstance(brightness, int):
-                self.last_set_value = max(0, min(100, brightness))
-            if isinstance(displays, list):
-                self.ddc_displays = [str(d) for d in displays if str(d).isdigit()]
-                self.supported_displays = list(self.ddc_displays)
-            self.log.info(
-                "state cache loaded: brightness=%s displays=%s",
-                self.last_set_value,
-                ",".join(self.ddc_displays) if self.ddc_displays else "none",
-            )
-        except Exception:
-            pass
+        for path in (self.state_path, self.legacy_state_path):
+            try:
+                with path.open("r", encoding="utf-8") as f:
+                    data = json.load(f)
+                brightness = data.get("brightness")
+                displays = data.get("displays", [])
+                if isinstance(brightness, int):
+                    self.last_set_value = max(0, min(100, brightness))
+                if isinstance(displays, list):
+                    self.ddc_displays = [str(d) for d in displays if str(d).isdigit()]
+                    self.supported_displays = list(self.ddc_displays)
+                self.log.info(
+                    "state cache loaded from %s: brightness=%s displays=%s",
+                    path,
+                    self.last_set_value,
+                    ",".join(self.ddc_displays) if self.ddc_displays else "none",
+                )
+                return
+            except Exception:
+                continue
 
     def save_state_cache(self):
         payload = {
@@ -249,12 +255,15 @@ class BrightnessIndicator:
         self.bootstrap_thread = t
 
     def bootstrap_worker_loop(self):
-        self.discover_ddc_displays(force=True)
-        current = self.get_current_brightness()
-        if current is not None:
-            self.last_set_value = current
-            self.save_state_cache()
-            GLib.idle_add(self.update_indicator_label, current)
+        for attempt in range(self.STARTUP_PROBE_MAX_ATTEMPTS):
+            self.discover_ddc_displays(force=(attempt == 0))
+            current = self.get_current_brightness()
+            if current is not None:
+                self.last_set_value = current
+                self.save_state_cache()
+                GLib.idle_add(self.update_indicator_label, current)
+                return
+            time.sleep(1.0)
 
     def discover_ddc_displays(self, force=False):
         now = time.monotonic()
@@ -354,7 +363,7 @@ class BrightnessIndicator:
             return True
 
         with self.apply_cond:
-            if self.pending_brightness is not None:
+            if self.brightness_queue:
                 return True
 
         self.load_current_brightness()
@@ -401,7 +410,7 @@ class BrightnessIndicator:
     def request_apply_brightness(self, value):
         with self.apply_cond:
             self.last_control_event = time.monotonic()
-            self.pending_brightness = int(value)
+            self.brightness_queue.append(int(value))
             self.apply_cond.notify()
 
     def set_brightness(self, value):
@@ -425,14 +434,13 @@ class BrightnessIndicator:
     def apply_worker_loop(self):
         while not self.apply_worker_stop.is_set():
             with self.apply_cond:
-                while self.pending_brightness is None and not self.apply_worker_stop.is_set():
+                while not self.brightness_queue and not self.apply_worker_stop.is_set():
                     self.apply_cond.wait(timeout=1.0)
 
                 if self.apply_worker_stop.is_set():
                     break
 
-                value = self.pending_brightness
-                self.pending_brightness = None
+                value = self.brightness_queue.popleft()
 
             ok = self.apply_brightness_now(value)
             if ok:
