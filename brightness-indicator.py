@@ -106,7 +106,7 @@ class BrightnessIndicator:
         self.desired_set_at = 0.0
         self.last_set_value = None
         self.has_real_reading = False
-        self.startup_force_refresh_done = False
+        self.startup_force_refresh_scheduled = False
 
         self.shutdown_started = False
 
@@ -361,13 +361,16 @@ class BrightnessIndicator:
         self.log.debug("brightness read [%s]: no readable display", context)
         return None
 
-    def update_indicator_label(self, value):
+    def update_indicator_label(self, value, force_change=False):
         if threading.get_ident() != self.main_thread_id:
-            GLib.idle_add(self.update_indicator_label, value)
+            GLib.idle_add(self.update_indicator_label, value, force_change)
             return False
 
         try:
             label = f"{value}%"
+            if force_change:
+                # Force a change notification for shells that miss an early identical label.
+                self.indicator.set_label("--%", "100%")
             self.indicator.set_label(label, "100%")
             self.indicator.set_status(AppIndicator.IndicatorStatus.ACTIVE)
             if self.current_item is not None:
@@ -377,9 +380,9 @@ class BrightnessIndicator:
         return False
 
     def force_startup_display_refresh(self, value):
-        if self.startup_force_refresh_done:
+        if self.shutdown_started:
             return False
-        self.update_indicator_label(value)
+        self.update_indicator_label(value, True)
         try:
             self.indicator.set_status(AppIndicator.IndicatorStatus.PASSIVE)
             self.indicator.set_status(AppIndicator.IndicatorStatus.ACTIVE)
@@ -388,11 +391,12 @@ class BrightnessIndicator:
         return False
 
     def schedule_startup_display_refresh(self, value):
-        if self.startup_force_refresh_done:
-            return
-        self.startup_force_refresh_done = True
+        if self.startup_force_refresh_scheduled:
+            return False
+        self.startup_force_refresh_scheduled = True
         for delay in self.STARTUP_FORCE_REFRESH_MS:
             GLib.timeout_add(delay, self.force_startup_display_refresh, value)
+        return False
 
     def resync_indicator_label(self):
         if self.shutdown_started:
