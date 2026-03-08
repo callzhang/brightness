@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Brightness Control
+Comment=Control external monitor brightness via DDC/CI
+Exec=__EXEC__
+Icon=display-brightness-symbolic
+Terminal=false
+Categories=Utility;Settings;GTK;
+StartupNotify=false
+X-GNOME-Autostart-enabled=true
