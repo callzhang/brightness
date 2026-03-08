@@ -70,6 +70,8 @@ class BrightnessIndicator:
     DISPLAY_CACHE_TTL_SECONDS = 300
     BRIGHTNESS_SETTLE_SECONDS = 3.0
     BRIGHTNESS_MATCH_TOLERANCE = 2
+    CONTROL_QUIET_WINDOW_SECONDS = 6.0
+    MEASURED_LABEL_MIN_DELTA = 2
 
     def __init__(self, lock_fd, state_dir: Path):
         self.log = logging.getLogger(APP_NAME)
@@ -324,8 +326,15 @@ class BrightnessIndicator:
                 self.desired_brightness = None
             elif (now - self.desired_set_at) < self.BRIGHTNESS_SETTLE_SECONDS:
                 return
+            elif (now - self.last_control_event) < self.CONTROL_QUIET_WINDOW_SECONDS:
+                # Keep showing requested value for a short quiet window after key/menu control.
+                return
             else:
                 self.desired_brightness = None
+
+        if self.last_set_value is not None:
+            if abs(current - self.last_set_value) < self.MEASURED_LABEL_MIN_DELTA:
+                return
 
         self.update_indicator_label(current)
         self.last_set_value = current
@@ -341,7 +350,7 @@ class BrightnessIndicator:
             return False
 
         now = time.monotonic()
-        if (now - self.last_control_event) < 1.5:
+        if (now - self.last_control_event) < self.CONTROL_QUIET_WINDOW_SECONDS:
             return True
 
         with self.apply_cond:
