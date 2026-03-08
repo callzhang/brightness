@@ -76,7 +76,11 @@ class BrightnessIndicator:
     STARTUP_LABEL_RETRY_SECONDS = (1, 3)
     STARTUP_RETRY_INTERVAL_SECONDS = 1.0
     STARTUP_WARN_EVERY_ATTEMPTS = 5
-    LABEL_RESYNC_INTERVAL_SECONDS = 5
+    STARTUP_RESYNC_INTERVAL_SECONDS = 2
+    STARTUP_RESYNC_WINDOW_SECONDS = 20
+    DEFAULT_RESYNC_INTERVAL_SECONDS = 30
+    MIN_RESYNC_INTERVAL_SECONDS = 10
+    MAX_RESYNC_INTERVAL_SECONDS = 600
     STARTUP_FORCE_REFRESH_MS = (0, 800, 2000)
     STARTUP_FORCE_SPLIT_DELAY_MS = 120
 
@@ -87,6 +91,17 @@ class BrightnessIndicator:
 
         self.step_percent = int(os.environ.get("BRIGHTNESS_STEP", "10"))
         self.step_percent = max(1, min(30, self.step_percent))
+        try:
+            configured_resync = int(
+                os.environ.get("BRIGHTNESS_RESYNC_SECONDS", str(self.DEFAULT_RESYNC_INTERVAL_SECONDS))
+            )
+        except Exception:
+            configured_resync = self.DEFAULT_RESYNC_INTERVAL_SECONDS
+        self.resync_interval_seconds = max(
+            self.MIN_RESYNC_INTERVAL_SECONDS,
+            min(self.MAX_RESYNC_INTERVAL_SECONDS, configured_resync),
+        )
+        self.started_at = time.monotonic()
 
         self.ddc_lock = threading.Lock()
         self.ddc_cmd_prefix = ["ddcutil"]
@@ -110,6 +125,7 @@ class BrightnessIndicator:
         self.has_real_reading = False
         self.startup_force_refresh_scheduled = False
         self.label_signal_toggle = False
+        self.last_label_event_at = self.started_at
 
         self.shutdown_started = False
 
@@ -147,7 +163,8 @@ class BrightnessIndicator:
 
         GLib.timeout_add_seconds(5, self.refresh_brightness_label)
         GLib.timeout_add_seconds(2, self.health_check)
-        GLib.timeout_add_seconds(self.LABEL_RESYNC_INTERVAL_SECONDS, self.resync_indicator_label)
+        GLib.timeout_add_seconds(self.STARTUP_RESYNC_INTERVAL_SECONDS, self.startup_resync_indicator_label)
+        GLib.timeout_add_seconds(self.STARTUP_RESYNC_WINDOW_SECONDS, self.enable_steady_resync)
 
     def create_menu(self):
         self.current_item = Gtk.MenuItem(label="Current: --%")
@@ -380,6 +397,8 @@ class BrightnessIndicator:
             self.indicator.set_title(base_label)
             if self.current_item is not None:
                 self.current_item.set_label(f"Current: {base_label}")
+            if not force_emit:
+                self.last_label_event_at = time.monotonic()
         except Exception:
             self.log.exception("failed to update indicator label")
         return False
@@ -410,11 +429,34 @@ class BrightnessIndicator:
             GLib.timeout_add(delay, self.force_startup_display_refresh, value)
         return False
 
-    def resync_indicator_label(self):
+    def startup_resync_indicator_label(self):
         if self.shutdown_started:
+            return False
+        if (time.monotonic() - self.started_at) >= self.STARTUP_RESYNC_WINDOW_SECONDS:
             return False
         if self.last_set_value is not None:
             self.update_indicator_label(self.last_set_value, force_emit=True)
+        return True
+
+    def enable_steady_resync(self):
+        if self.shutdown_started:
+            return False
+        GLib.timeout_add_seconds(self.resync_interval_seconds, self.resync_indicator_label)
+        self.log.info("steady label resync enabled: interval=%ss", self.resync_interval_seconds)
+        return False
+
+    def resync_indicator_label(self):
+        if self.shutdown_started:
+            return False
+
+        if self.last_set_value is None:
+            return True
+
+        last_event_at = max(self.last_control_event, self.last_label_event_at)
+        if (time.monotonic() - last_event_at) < self.resync_interval_seconds:
+            return True
+
+        self.update_indicator_label(self.last_set_value, force_emit=True)
         return True
 
     def handle_detected_brightness(self, current):

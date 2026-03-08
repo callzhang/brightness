@@ -4,7 +4,7 @@ Simple Linux tray app for controlling **all external monitors** via DDC/CI.
 It shows current brightness in the menubar, supports keyboard brightness keys, and applies changes to every detected DDC display.
 
 ## Features
-- Menubar label like `72%` (refresh every 5 seconds)
+- Menubar label like `72%` with startup-fast refresh and idle fallback resync
 - Keyboard brightness keys support (`KEY_BRIGHTNESSUP/DOWN`)
 - Applies brightness to all detected displays, not just one
 - Single-instance lock (prevents duplicate tray icons)
@@ -72,6 +72,7 @@ To read `/dev/input/event*`, your user may need `input` group membership or equi
 
 ## Environment variables
 - `BRIGHTNESS_STEP` (default `10`, range `1-30`)
+- `BRIGHTNESS_RESYNC_SECONDS` (default `30`, range `10-600`) for idle tray-label fallback refresh
 - `BRIGHTNESS_USE_SUDO=1` to prefer `sudo -n ddcutil`
 
 ## Logs
