@@ -102,5 +102,11 @@ Files:
 ./uninstall.sh
 ```
 
+Remove app state/logs too:
+
+```bash
+./uninstall.sh --purge-state
+```
+
 ## License
 MIT
