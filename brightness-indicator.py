@@ -100,6 +100,7 @@ class BrightnessIndicator:
         self.brightness_queue = deque()
         self.apply_cond = threading.Condition()
         self.apply_worker_stop = threading.Event()
+        self.requested_brightness = None
 
         self.key_listener_stop = threading.Event()
 
@@ -132,6 +133,7 @@ class BrightnessIndicator:
 
         self.load_state_cache()
         if self.last_set_value is not None:
+            self.requested_brightness = self.last_set_value
             self.update_indicator_label(self.last_set_value)
 
         # Force label update again once GTK main loop is fully running.
@@ -437,6 +439,8 @@ class BrightnessIndicator:
 
         self.update_indicator_label(current)
         self.last_set_value = current
+        with self.apply_cond:
+            self.requested_brightness = current
         self.save_state_cache()
 
     def load_current_brightness(self, force_discovery=False, context="periodic"):
@@ -493,8 +497,6 @@ class BrightnessIndicator:
                     )
 
             if success_count > 0:
-                self.last_set_value = value
-                self.save_state_cache()
                 return True
 
             self.log.warning("set brightness failed on all displays")
@@ -515,6 +517,8 @@ class BrightnessIndicator:
         self.last_control_event = time.monotonic()
         self.desired_brightness = value
         self.desired_set_at = self.last_control_event
+        with self.apply_cond:
+            self.requested_brightness = value
         self.last_set_value = value
 
         self.update_indicator_label(value)
@@ -540,10 +544,24 @@ class BrightnessIndicator:
 
             ok = self.apply_brightness_now(value)
             if ok:
-                GLib.idle_add(self.update_indicator_label, value)
+                with self.apply_cond:
+                    latest_requested = self.requested_brightness
+                if latest_requested is None or value == latest_requested:
+                    self.last_set_value = value
+                    self.save_state_cache()
+                    GLib.idle_add(self.update_indicator_label, value)
+                else:
+                    self.log.debug(
+                        "stale applied value ignored: applied=%s latest_requested=%s",
+                        value,
+                        latest_requested,
+                    )
 
     def step_brightness(self, direction):
-        current = self.last_set_value
+        with self.apply_cond:
+            current = self.requested_brightness
+        if current is None:
+            current = self.last_set_value
         if current is None:
             current = self.get_current_brightness()
         if current is None:
