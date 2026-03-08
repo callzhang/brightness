@@ -73,8 +73,9 @@ class BrightnessIndicator:
     BRIGHTNESS_MATCH_TOLERANCE = 2
     CONTROL_QUIET_WINDOW_SECONDS = 6.0
     MEASURED_LABEL_MIN_DELTA = 2
-    STARTUP_PROBE_MAX_ATTEMPTS = 6
     STARTUP_LABEL_RETRY_SECONDS = (1, 3)
+    STARTUP_RETRY_INTERVAL_SECONDS = 1.0
+    STARTUP_WARN_EVERY_ATTEMPTS = 5
 
     def __init__(self, lock_fd, state_dir: Path):
         self.log = logging.getLogger(APP_NAME)
@@ -102,6 +103,7 @@ class BrightnessIndicator:
         self.desired_brightness = None
         self.desired_set_at = 0.0
         self.last_set_value = None
+        self.has_real_reading = False
 
         self.shutdown_started = False
 
@@ -249,6 +251,8 @@ class BrightnessIndicator:
                 continue
 
     def ensure_startup_label(self):
+        if self.has_real_reading:
+            return False
         if self.last_set_value is not None:
             self.update_indicator_label(self.last_set_value)
             self.log.info("startup label ensured: %s%%", self.last_set_value)
@@ -274,15 +278,16 @@ class BrightnessIndicator:
         self.bootstrap_thread = t
 
     def bootstrap_worker_loop(self):
-        for attempt in range(self.STARTUP_PROBE_MAX_ATTEMPTS):
-            self.discover_ddc_displays(force=(attempt == 0))
-            current = self.get_current_brightness()
-            if current is not None:
-                self.last_set_value = current
-                self.save_state_cache()
-                GLib.idle_add(self.update_indicator_label, current)
+        attempt = 0
+        while not self.shutdown_started and not self.has_real_reading:
+            force_discovery = (attempt == 0) or (attempt % 10 == 0)
+            ok = self.load_current_brightness(force_discovery=force_discovery, context="startup")
+            if ok:
                 return
-            time.sleep(1.0)
+            attempt += 1
+            if attempt % self.STARTUP_WARN_EVERY_ATTEMPTS == 0:
+                self.log.warning("startup brightness read pending: attempt=%s", attempt)
+            time.sleep(self.STARTUP_RETRY_INTERVAL_SECONDS)
 
     def discover_ddc_displays(self, force=False):
         now = time.monotonic()
@@ -320,20 +325,30 @@ class BrightnessIndicator:
                         parts = line.split("current value =")
                         if len(parts) > 1:
                             return int(parts[1].split(",")[0].strip())
+            else:
+                self.log.debug(
+                    "getvcp failed display=%s rc=%s stderr=%s",
+                    display_id,
+                    result.returncode,
+                    (result.stderr or "").strip(),
+                )
         except Exception:
             pass
         return None
 
-    def get_current_brightness(self):
-        displays = self.discover_ddc_displays()
+    def get_current_brightness(self, force_discovery=False, context="periodic"):
+        displays = self.discover_ddc_displays(force=force_discovery)
         if not displays:
+            self.log.debug("brightness read [%s]: no displays", context)
             return None
 
         candidates = self.supported_displays or displays
         for display_id in candidates:
             value = self.get_display_brightness(display_id)
             if value is not None:
+                self.log.info("brightness read [%s]: display=%s value=%s", context, display_id, value)
                 return value
+        self.log.debug("brightness read [%s]: no readable display", context)
         return None
 
     def update_indicator_label(self, value):
@@ -348,6 +363,10 @@ class BrightnessIndicator:
         return False
 
     def handle_detected_brightness(self, current):
+        if not self.has_real_reading:
+            self.has_real_reading = True
+            self.log.info("first real brightness read=%s%%", current)
+
         now = time.monotonic()
         if self.desired_brightness is not None:
             if abs(current - self.desired_brightness) <= self.BRIGHTNESS_MATCH_TOLERANCE:
@@ -368,14 +387,20 @@ class BrightnessIndicator:
         self.last_set_value = current
         self.save_state_cache()
 
-    def load_current_brightness(self):
-        current = self.get_current_brightness()
+    def load_current_brightness(self, force_discovery=False, context="periodic"):
+        current = self.get_current_brightness(force_discovery=force_discovery, context=context)
         if current is not None:
             self.handle_detected_brightness(current)
+            return True
+        return False
 
     def refresh_brightness_label(self):
         if self.shutdown_started:
             return False
+
+        if not self.has_real_reading:
+            self.load_current_brightness(force_discovery=True, context="startup-fallback")
+            return True
 
         now = time.monotonic()
         if (now - self.last_control_event) < self.CONTROL_QUIET_WINDOW_SECONDS:
@@ -385,7 +410,7 @@ class BrightnessIndicator:
             if self.brightness_queue:
                 return True
 
-        self.load_current_brightness()
+        self.load_current_brightness(context="periodic")
         return True
 
     def apply_brightness_now(self, value):
