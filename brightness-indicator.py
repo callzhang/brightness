@@ -29,7 +29,6 @@ except Exception:
     list_devices = None
 
 APP_NAME = "brightness-indicator"
-INVISIBLE_LABEL_MARKER = "\u2060"
 
 
 def get_runtime_dir() -> Path:
@@ -78,7 +77,7 @@ class BrightnessIndicator:
     STARTUP_RETRY_INTERVAL_SECONDS = 1.0
     STARTUP_WARN_EVERY_ATTEMPTS = 5
     LABEL_RESYNC_INTERVAL_SECONDS = 2
-    STARTUP_FORCE_REFRESH_MS = (0, 200, 800, 2000)
+    STARTUP_FORCE_REFRESH_MS = (0, 800, 2000)
     STARTUP_FORCE_SPLIT_DELAY_MS = 120
 
     def __init__(self, lock_fd, state_dir: Path):
@@ -365,17 +364,17 @@ class BrightnessIndicator:
         self.log.debug("brightness read [%s]: no readable display", context)
         return None
 
-    def update_indicator_label(self, value):
+    def update_indicator_label(self, value, guide="100%"):
         if threading.get_ident() != self.main_thread_id:
-            GLib.idle_add(self.update_indicator_label, value)
+            GLib.idle_add(self.update_indicator_label, value, guide)
             return False
 
         try:
-            label = f"{value}%"
-            self.indicator.set_label(label, "100%")
-            self.indicator.set_title(label)
+            base_label = f"{value}%"
+            self.indicator.set_label(base_label, guide)
+            self.indicator.set_title(base_label)
             if self.current_item is not None:
-                self.current_item.set_label(f"Current: {label}")
+                self.current_item.set_label(f"Current: {base_label}")
         except Exception:
             self.log.exception("failed to update indicator label")
         return False
@@ -390,7 +389,9 @@ class BrightnessIndicator:
         if self.shutdown_started:
             return False
         # Split into two UI ticks so shell side receives a concrete label transition signal.
-        self.indicator.set_label(f"{value}%{INVISIBLE_LABEL_MARKER}", "100%")
+        # Keep the visible label stable; toggle only guide to force a DBus label signal.
+        self.indicator.set_label(f"{value}%", "100% ")
+        self.indicator.set_title(f"{value}%")
         GLib.timeout_add(
             self.STARTUP_FORCE_SPLIT_DELAY_MS,
             self.finish_startup_label_refresh,
