@@ -78,6 +78,7 @@ class BrightnessIndicator:
     STARTUP_WARN_EVERY_ATTEMPTS = 5
     LABEL_RESYNC_INTERVAL_SECONDS = 2
     STARTUP_FORCE_REFRESH_MS = (0, 200, 800, 2000)
+    STARTUP_FORCE_SPLIT_DELAY_MS = 120
 
     def __init__(self, lock_fd, state_dir: Path):
         self.log = logging.getLogger(APP_NAME)
@@ -361,33 +362,37 @@ class BrightnessIndicator:
         self.log.debug("brightness read [%s]: no readable display", context)
         return None
 
-    def update_indicator_label(self, value, force_change=False):
+    def update_indicator_label(self, value):
         if threading.get_ident() != self.main_thread_id:
-            GLib.idle_add(self.update_indicator_label, value, force_change)
+            GLib.idle_add(self.update_indicator_label, value)
             return False
 
         try:
             label = f"{value}%"
-            if force_change:
-                # Force a change notification for shells that miss an early identical label.
-                self.indicator.set_label("--%", "100%")
             self.indicator.set_label(label, "100%")
-            self.indicator.set_status(AppIndicator.IndicatorStatus.ACTIVE)
+            self.indicator.set_title(label)
             if self.current_item is not None:
                 self.current_item.set_label(f"Current: {label}")
         except Exception:
             self.log.exception("failed to update indicator label")
         return False
 
+    def finish_startup_label_refresh(self, value):
+        if self.shutdown_started:
+            return False
+        self.update_indicator_label(value)
+        return False
+
     def force_startup_display_refresh(self, value):
         if self.shutdown_started:
             return False
-        self.update_indicator_label(value, True)
-        try:
-            self.indicator.set_status(AppIndicator.IndicatorStatus.PASSIVE)
-            self.indicator.set_status(AppIndicator.IndicatorStatus.ACTIVE)
-        except Exception:
-            pass
+        # Split into two UI ticks so shell side receives a concrete label transition signal.
+        self.indicator.set_label("--%", "100%")
+        GLib.timeout_add(
+            self.STARTUP_FORCE_SPLIT_DELAY_MS,
+            self.finish_startup_label_refresh,
+            value,
+        )
         return False
 
     def schedule_startup_display_refresh(self, value):
