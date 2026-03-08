@@ -76,6 +76,8 @@ class BrightnessIndicator:
     STARTUP_LABEL_RETRY_SECONDS = (1, 3)
     STARTUP_RETRY_INTERVAL_SECONDS = 1.0
     STARTUP_WARN_EVERY_ATTEMPTS = 5
+    LABEL_RESYNC_INTERVAL_SECONDS = 2
+    STARTUP_FORCE_REFRESH_MS = (0, 200, 800, 2000)
 
     def __init__(self, lock_fd, state_dir: Path):
         self.log = logging.getLogger(APP_NAME)
@@ -104,6 +106,7 @@ class BrightnessIndicator:
         self.desired_set_at = 0.0
         self.last_set_value = None
         self.has_real_reading = False
+        self.startup_force_refresh_done = False
 
         self.shutdown_started = False
 
@@ -119,6 +122,7 @@ class BrightnessIndicator:
         self.indicator.set_label("--%", "100%")
 
         self.menu = Gtk.Menu()
+        self.current_item = None
         self.create_menu()
         self.indicator.set_menu(self.menu)
 
@@ -139,8 +143,14 @@ class BrightnessIndicator:
 
         GLib.timeout_add_seconds(5, self.refresh_brightness_label)
         GLib.timeout_add_seconds(2, self.health_check)
+        GLib.timeout_add_seconds(self.LABEL_RESYNC_INTERVAL_SECONDS, self.resync_indicator_label)
 
     def create_menu(self):
+        self.current_item = Gtk.MenuItem(label="Current: --%")
+        self.current_item.set_sensitive(False)
+        self.menu.append(self.current_item)
+        self.menu.append(Gtk.SeparatorMenuItem())
+
         presets = [100, 75, 50, 25, 0]
 
         for value in presets:
@@ -357,10 +367,39 @@ class BrightnessIndicator:
             return False
 
         try:
-            self.indicator.set_label(f"{value}%", "100%")
+            label = f"{value}%"
+            self.indicator.set_label(label, "100%")
+            self.indicator.set_status(AppIndicator.IndicatorStatus.ACTIVE)
+            if self.current_item is not None:
+                self.current_item.set_label(f"Current: {label}")
         except Exception:
             self.log.exception("failed to update indicator label")
         return False
+
+    def force_startup_display_refresh(self, value):
+        if self.startup_force_refresh_done:
+            return False
+        self.update_indicator_label(value)
+        try:
+            self.indicator.set_status(AppIndicator.IndicatorStatus.PASSIVE)
+            self.indicator.set_status(AppIndicator.IndicatorStatus.ACTIVE)
+        except Exception:
+            pass
+        return False
+
+    def schedule_startup_display_refresh(self, value):
+        if self.startup_force_refresh_done:
+            return
+        self.startup_force_refresh_done = True
+        for delay in self.STARTUP_FORCE_REFRESH_MS:
+            GLib.timeout_add(delay, self.force_startup_display_refresh, value)
+
+    def resync_indicator_label(self):
+        if self.shutdown_started:
+            return False
+        if self.last_set_value is not None:
+            self.update_indicator_label(self.last_set_value)
+        return True
 
     def handle_detected_brightness(self, current):
         first_real_read = False
@@ -368,6 +407,7 @@ class BrightnessIndicator:
             self.has_real_reading = True
             first_real_read = True
             self.log.info("first real brightness read=%s%%", current)
+            GLib.idle_add(self.schedule_startup_display_refresh, current)
 
         now = time.monotonic()
         if self.desired_brightness is not None:
