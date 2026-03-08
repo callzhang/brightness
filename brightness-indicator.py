@@ -29,6 +29,7 @@ except Exception:
     list_devices = None
 
 APP_NAME = "brightness-indicator"
+INVISIBLE_LABEL_MARKER = "\u2060"
 
 
 def get_runtime_dir() -> Path:
@@ -387,7 +388,7 @@ class BrightnessIndicator:
         if self.shutdown_started:
             return False
         # Split into two UI ticks so shell side receives a concrete label transition signal.
-        self.indicator.set_label("--%", "100%")
+        self.indicator.set_label(f"{value}%{INVISIBLE_LABEL_MARKER}", "100%")
         GLib.timeout_add(
             self.STARTUP_FORCE_SPLIT_DELAY_MS,
             self.finish_startup_label_refresh,
