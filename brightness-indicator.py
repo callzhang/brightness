@@ -74,6 +74,7 @@ class BrightnessIndicator:
     CONTROL_QUIET_WINDOW_SECONDS = 6.0
     MEASURED_LABEL_MIN_DELTA = 2
     STARTUP_PROBE_MAX_ATTEMPTS = 6
+    STARTUP_LABEL_RETRY_SECONDS = (1, 3)
 
     def __init__(self, lock_fd, state_dir: Path):
         self.log = logging.getLogger(APP_NAME)
@@ -124,6 +125,11 @@ class BrightnessIndicator:
         self.load_state_cache()
         if self.last_set_value is not None:
             self.update_indicator_label(self.last_set_value)
+
+        # Force label update again once GTK main loop is fully running.
+        GLib.idle_add(self.ensure_startup_label)
+        for sec in self.STARTUP_LABEL_RETRY_SECONDS:
+            GLib.timeout_add_seconds(sec, self.ensure_startup_label)
 
         self.start_bootstrap_worker()
         self.start_apply_worker()
@@ -220,8 +226,15 @@ class BrightnessIndicator:
                     data = json.load(f)
                 brightness = data.get("brightness")
                 displays = data.get("displays", [])
+                parsed = None
                 if isinstance(brightness, int):
-                    self.last_set_value = max(0, min(100, brightness))
+                    parsed = brightness
+                elif isinstance(brightness, float):
+                    parsed = int(round(brightness))
+                elif isinstance(brightness, str) and brightness.strip().isdigit():
+                    parsed = int(brightness.strip())
+                if parsed is not None:
+                    self.last_set_value = max(0, min(100, parsed))
                 if isinstance(displays, list):
                     self.ddc_displays = [str(d) for d in displays if str(d).isdigit()]
                     self.supported_displays = list(self.ddc_displays)
@@ -234,6 +247,12 @@ class BrightnessIndicator:
                 return
             except Exception:
                 continue
+
+    def ensure_startup_label(self):
+        if self.last_set_value is not None:
+            self.update_indicator_label(self.last_set_value)
+            self.log.info("startup label ensured: %s%%", self.last_set_value)
+        return False
 
     def save_state_cache(self):
         payload = {
