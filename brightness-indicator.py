@@ -365,17 +365,18 @@ class BrightnessIndicator:
         self.log.debug("brightness read [%s]: no readable display", context)
         return None
 
-    def update_indicator_label(self, value, guide="100%", force_emit=False):
+    def update_indicator_label(self, value, force_emit=False):
         if threading.get_ident() != self.main_thread_id:
-            GLib.idle_add(self.update_indicator_label, value, guide, force_emit)
+            GLib.idle_add(self.update_indicator_label, value, force_emit)
             return False
 
         try:
             base_label = f"{value}%"
+            indicator_label = base_label
             if force_emit:
-                guide = "100% " if self.label_signal_toggle else "100%"
+                indicator_label = f"{base_label} " if self.label_signal_toggle else base_label
                 self.label_signal_toggle = not self.label_signal_toggle
-            self.indicator.set_label(base_label, guide)
+            self.indicator.set_label(indicator_label, "100% ")
             self.indicator.set_title(base_label)
             if self.current_item is not None:
                 self.current_item.set_label(f"Current: {base_label}")
@@ -393,9 +394,7 @@ class BrightnessIndicator:
         if self.shutdown_started:
             return False
         # Split into two UI ticks so shell side receives a concrete label transition signal.
-        # Keep the visible label stable; toggle only guide to force a DBus label signal.
-        self.indicator.set_label(f"{value}%", "100% ")
-        self.indicator.set_title(f"{value}%")
+        self.update_indicator_label(value, force_emit=True)
         GLib.timeout_add(
             self.STARTUP_FORCE_SPLIT_DELAY_MS,
             self.finish_startup_label_refresh,
